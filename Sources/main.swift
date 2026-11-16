@@ -54,6 +54,12 @@ enum Settings {
         set { UserDefaults.standard.set(newValue, forKey: "routerMAC") }
     }
     static func forgetRouterIdentity() { routerKey = nil; routerMAC = nil }
+    /// TP-Link allows one admin login at a time. When on, RouterTop logs out whoever is
+    /// logged in (like the router page's "force log out"); when off, it waits for them.
+    static var takeOver: Bool {
+        get { UserDefaults.standard.object(forKey: "takeOver") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "takeOver") }
+    }
 }
 
 /// Looks up the MAC address of a host on the local network from the ARP table.
@@ -169,8 +175,9 @@ final class Monitor {
         do {
             if client == nil {
                 let c = RouterClient(host: Settings.host)
-                // Don't kick someone out of the router's web page: TP-Link allows one admin at a time.
-                if await c.someoneLoggedIn() {
+                // TP-Link allows one admin at a time. Unless "Take Over Router Login" is on,
+                // wait for whoever is logged in to the router page instead of kicking them out.
+                if !Settings.takeOver, await c.someoneLoggedIn() {
                     state = .paused("Router page is in use; will resume after it logs out")
                     nextAttempt = Date().addingTimeInterval(15)
                     return
@@ -234,6 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let menu = NSMenu()
     let monitor = Monitor()
     var timer: Timer?
+    var sigterm: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -241,6 +249,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         menu.autoenablesItems = false
         statusItem.menu = menu
+
+        // Log out of the router even when stopped with `kill`/`pkill` (SIGTERM), not just Quit,
+        // so a stale session doesn't hold the router's single admin slot.
+        signal(SIGTERM, SIG_IGN)
+        let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        term.setEventHandler { NSApp.terminate(nil) }
+        term.resume()
+        sigterm = term
 
         monitor.onUpdate = { [weak self] in self?.refreshUI() }
         monitor.onLoginRejected = { [weak self] msg in self?.showLoginError(msg) }
@@ -363,6 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(mi)
         }
         add("Show Top Device in Menu Bar", #selector(toggleTopDevice), state: Settings.showTopDevice)
+        add("Take Over Router Login", #selector(toggleTakeOver), state: Settings.takeOver)
         add(monitor.userPaused ? "Resume Monitoring" : "Pause Monitoring", #selector(togglePause))
         add("Open Router Page…", #selector(openRouterPage))
         menu.addItem(.separator())
@@ -377,6 +394,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func toggleTopDevice() {
         Settings.showTopDevice.toggle()
+        refreshUI()
+    }
+
+    @objc func toggleTakeOver() {
+        Settings.takeOver.toggle()
+        if Settings.takeOver, case .paused = monitor.state, !monitor.userPaused { monitor.setPaused(false) }
         refreshUI()
     }
 

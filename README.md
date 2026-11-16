@@ -82,6 +82,7 @@ RouterTop turns on the router's **Traffic Statistics** feature automatically if 
 | Item | What it does |
 |---|---|
 | Show Top Device in Menu Bar | Shows the top device and its speed, or (when off) the total speed only |
+| Take Over Router Login | On: logs out any other admin session. Off: waits until it logs out |
 | Pause / Resume Monitoring | Logs out of the router and stops polling |
 | Open Router Page… | Pauses RouterTop and opens the router's web page in your browser |
 | Router Settings… | Changes the router address or login, or forgets the saved password |
@@ -89,7 +90,7 @@ RouterTop turns on the router's **Traffic Statistics** feature automatically if 
 
 ## Good to know
 
-- **One admin login at a time.** TP-Link routers allow only one logged-in admin. RouterTop never kicks you out: if someone is logged in to the router's web page, RouterTop waits until they log out. Use **Open Router Page…** to pause RouterTop automatically.
+- **One admin login at a time.** TP-Link routers allow only one logged-in admin. With **Take Over Router Login** on (the default), RouterTop logs out any other session, just like the router page's "force log out". Turn it off to have RouterTop wait until the other session logs out instead. To use the router's web page yourself, choose **Open Router Page…**: RouterTop pauses and steps aside until you click **Resume**.
 - **Some routers count one direction only.** Many VR-series firmwares report only one direction (mostly downloads) when hardware NAT acceleration is on. That's enough to find the heavy user. Turning off **NAT Boost / Hardware NAT** on the router may enable full counting, at a small cost in top speed.
 - **"Total"** is the data counted by the router since its Traffic Statistics were last reset (or the router restarted).
 
