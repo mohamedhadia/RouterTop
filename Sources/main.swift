@@ -185,12 +185,14 @@ final class Monitor {
                 // Only send the password to the router the user set up.
                 let key = try await c.publicKey().n
                 let mac = macAddress(of: Settings.host)          // the requests above refreshed the ARP entry
-                let firstLogin = Settings.routerKey == nil && Settings.routerMAC == nil
-                let keyMatches = Settings.routerKey == key
-                let macMatches = mac != nil && mac == Settings.routerMAC
-                guard firstLogin || keyMatches || macMatches else {
-                    state = .paused("Not your saved router (different network?). Your password was not sent. "
-                                    + "Re-save Router Settings if you replaced your router.")
+                // A saved password only goes to a router with the exact saved key. A MAC address
+                // can be spoofed, so a matching MAC is used only to word the message.
+                let firstLogin = Settings.routerKey == nil
+                guard firstLogin || Settings.routerKey == key else {
+                    let sameHardware = mac != nil && mac == Settings.routerMAC
+                    state = .paused(sameHardware
+                        ? "Your router's security key changed (after a restart?). Open Router Settings and click Save to confirm. Password not sent."
+                        : "Not your saved router (different network?). Your password was not sent.")
                     nextAttempt = Date().addingTimeInterval(30)
                     return
                 }

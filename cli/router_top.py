@@ -260,10 +260,15 @@ def main():
         sys.exit(f"Could not reach the router at {args.host}: {e}")
     mac = router_mac(args.host)
     pin = load_pin()
-    known = pin.get("key") == key or (mac is not None and pin.get("mac") == mac)
-    if from_keychain and pin and not known:
-        sys.exit("This doesn't look like your saved router (different network?), so your password "
-                 "was not sent.\nRun `router-top --forget` and log in again if you replaced your router.")
+    # A saved password only goes to a router with the exact saved key. A MAC address can be
+    # spoofed, so it only changes the wording; the user must confirm a changed key.
+    if from_keychain and pin.get("key") and pin["key"] != key:
+        if mac is not None and pin.get("mac") == mac:
+            print("Your router's security key changed (this can happen after a restart).")
+        else:
+            print("This doesn't look like your saved router (different network?).")
+        if input("Send your saved password to this router? [y/N] ").strip().lower() != "y":
+            sys.exit("Password not sent.")
     try:
         router.login(pw, user, expected_key=key)
         save_pin(key, mac or pin.get("mac"))
@@ -318,12 +323,12 @@ def main():
                 key, _ = router.public_key()
                 pin = load_pin()
                 mac = router_mac(args.host)
-                if pin.get("key") == key or (mac is not None and pin.get("mac") == mac):
+                if pin.get("key") == key:
                     router.login(pw, user, expected_key=key)
                     save_pin(key, mac or pin.get("mac"))
                 else:
-                    sys.stdout.write(f"{RED}Router identity changed (different network?). Not sending your password.{RESET}\n")
-                    time.sleep(10)
+                    sys.exit(f"{RED}Router identity changed (different network or router restart). "
+                             f"Password not sent. Run router-top again to confirm.{RESET}")
             except Exception:
                 pass
             continue
