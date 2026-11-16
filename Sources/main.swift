@@ -41,6 +41,35 @@ enum Settings {
         get { UserDefaults.standard.object(forKey: "showTopDevice") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "showTopDevice") }
     }
+    // Identity of the router the user set up. The password is only sent to that router,
+    // so another network's 192.168.1.1 (café, hotel, a friend's house) never receives it.
+    // Primary check: the router's RSA public key. Another device can copy the key but
+    // can't decrypt with it. Fallback: its MAC address, in case the router made a new key on reboot.
+    static var routerKey: String? {
+        get { UserDefaults.standard.string(forKey: "routerKey") }
+        set { UserDefaults.standard.set(newValue, forKey: "routerKey") }
+    }
+    static var routerMAC: String? {
+        get { UserDefaults.standard.string(forKey: "routerMAC") }
+        set { UserDefaults.standard.set(newValue, forKey: "routerMAC") }
+    }
+    static func forgetRouterIdentity() { routerKey = nil; routerMAC = nil }
+}
+
+/// Looks up the MAC address of a host on the local network from the ARP table.
+func macAddress(of host: String) -> String? {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/sbin/arp")
+    p.arguments = ["-n", host]
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = Pipe()
+    guard (try? p.run()) != nil else { return nil }
+    p.waitUntilExit()
+    let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    guard let mac = RouterClient.match(#" at ([0-9a-fA-F]{1,2}(?::[0-9a-fA-F]{1,2}){5}) "#, in: out) else { return nil }
+    // arp drops leading zeros ("d8:7:b6…"); normalise to "d8:07:b6…"
+    return mac.split(separator: ":").map { $0.count == 1 ? "0" + $0 : String($0) }.joined(separator: ":").lowercased()
 }
 
 // MARK: - Formatting
@@ -146,9 +175,23 @@ final class Monitor {
                     nextAttempt = Date().addingTimeInterval(15)
                     return
                 }
+                // Only send the password to the router the user set up.
+                let key = try await c.publicKey().n
+                let mac = macAddress(of: Settings.host)          // the requests above refreshed the ARP entry
+                let firstLogin = Settings.routerKey == nil && Settings.routerMAC == nil
+                let keyMatches = Settings.routerKey == key
+                let macMatches = mac != nil && mac == Settings.routerMAC
+                guard firstLogin || keyMatches || macMatches else {
+                    state = .paused("Not your saved router (different network?). Your password was not sent. "
+                                    + "Re-save Router Settings if you replaced your router.")
+                    nextAttempt = Date().addingTimeInterval(30)
+                    return
+                }
                 state = .connecting
                 onUpdate()
-                try await c.login(user: creds.user, password: creds.password)
+                try await c.login(user: creds.user, password: creds.password, expectedKey: key)
+                Settings.routerKey = key                          // remember (or refresh) after a good login
+                if let mac { Settings.routerMAC = mac }
                 if !(try await c.statsEnabled()) { try await c.enableStats() }
                 client = c
             }
@@ -406,6 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let pass = passField.stringValue
             guard !host.isEmpty, !pass.isEmpty else { NSSound.beep(); return }
             Settings.host = host
+            Settings.forgetRouterIdentity()   // the user just confirmed this router; learn it again
             Keychain.save(user: user.isEmpty ? "admin" : user, password: pass)
             if monitor.userPaused { monitor.setPaused(false) }
             monitor.configure(user: user.isEmpty ? "admin" : user, password: pass)

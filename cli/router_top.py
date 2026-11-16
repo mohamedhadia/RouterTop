@@ -12,7 +12,7 @@ current speed. Python 3 standard library only.
 Note: TP-Link allows one admin login at a time, so while this runs the
 router's web page will ask to "force log out". Ctrl+C logs out cleanly.
 """
-import argparse, base64, getpass, http.cookiejar, os, re, secrets, shutil, signal
+import argparse, base64, getpass, http.cookiejar, json, os, re, secrets, shutil, signal
 import subprocess, sys, time, urllib.request
 
 KEYCHAIN_SERVICE = "router-top"
@@ -53,10 +53,16 @@ class Router:
         """userSetting=2 means the router is bound to a TP-Link ID (email + password)."""
         return re.search(r"userSetting=(\d+)", self._req("/cgi/getParm")).group(1) == "2"
 
-    def login(self, password, user="admin"):
+    def public_key(self):
         parm = self._req("/cgi/getParm")
         e = re.search(r'ee="([0-9a-fA-F]+)"', parm).group(1)
         n = re.search(r'nn="([0-9a-fA-F]+)"', parm).group(1)
+        return n.lower(), e
+
+    def login(self, password, user="admin", expected_key=None):
+        n, e = self.public_key()
+        if expected_key and n != expected_key:
+            raise RuntimeError("router key changed during login")
         name = self._rsa(user, n, e)
         auth = self._rsa(base64.b64encode(password.encode()).decode(), n, e)
         self._req(f"/cgi/login?UserName={name}&Passwd={auth}&Action=1&LoginStatus=0")
@@ -122,13 +128,43 @@ def keychain_get():
 
 def keychain_set(user, pw):
     keychain_delete()
-    subprocess.run(["security", "add-generic-password", "-U", "-s", KEYCHAIN_SERVICE,
-                    "-a", user, "-w", pw], capture_output=True)
+    # "-w" as the last option makes `security` read the password from stdin,
+    # so it never appears in the process list.
+    subprocess.run(["security", "add-generic-password", "-U", "-s", KEYCHAIN_SERVICE, "-a", user, "-w"],
+                   input=f"{pw}\n{pw}\n", capture_output=True, text=True)
 
 def keychain_delete():
     subprocess.run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE], capture_output=True)
 
+# ---------------------------------------------------------------- router identity
+
+PIN_FILE = os.path.expanduser("~/.config/router-top/router-identity.json")
+
+def router_mac(host):
+    """MAC address of the router from the ARP table (normalised, lowercase)."""
+    out = subprocess.run(["/usr/sbin/arp", "-n", host], capture_output=True, text=True).stdout
+    m = re.search(r" at ([0-9a-fA-F]{1,2}(?::[0-9a-fA-F]{1,2}){5}) ", out)
+    return ":".join(p.zfill(2) for p in m.group(1).split(":")).lower() if m else None
+
+# Identity of the router the password was saved for. Primary check is its RSA public
+# key (another device can copy it but can't decrypt with it); the MAC address is a
+# fallback in case the router generates a new key after a reboot.
+def load_pin():
+    try:
+        return json.load(open(PIN_FILE))
+    except (OSError, ValueError):
+        return {}
+
+def save_pin(key, mac):
+    os.makedirs(os.path.dirname(PIN_FILE), exist_ok=True)
+    with open(PIN_FILE, "w") as f:
+        json.dump({"key": key, "mac": mac}, f)
+
 # ---------------------------------------------------------------- display
+
+def clean(s):
+    """Strip control characters (e.g. terminal escape codes) from router-supplied text."""
+    return "".join(ch for ch in str(s) if ch.isprintable())
 
 def ip_str(v):
     if v and v.isdigit():                       # some firmwares send the IP as an integer
@@ -192,6 +228,10 @@ def main():
 
     if args.forget:
         keychain_delete()
+        try:
+            os.remove(PIN_FILE)
+        except OSError:
+            pass
         print("Saved router password removed from Keychain.")
         return
 
@@ -212,8 +252,21 @@ def main():
                 user = "admin"
         pw = getpass.getpass(f"Router admin password for {args.host} (typing is hidden, press Enter when done): ")
 
+    # Only send a saved password to the router it was saved for, so another
+    # network's 192.168.1.1 never receives it.
     try:
-        router.login(pw, user)
+        key, _ = router.public_key()          # also refreshes the router's ARP entry
+    except Exception as e:
+        sys.exit(f"Could not reach the router at {args.host}: {e}")
+    mac = router_mac(args.host)
+    pin = load_pin()
+    known = pin.get("key") == key or (mac is not None and pin.get("mac") == mac)
+    if from_keychain and pin and not known:
+        sys.exit("This doesn't look like your saved router (different network?), so your password "
+                 "was not sent.\nRun `router-top --forget` and log in again if you replaced your router.")
+    try:
+        router.login(pw, user, expected_key=key)
+        save_pin(key, mac or pin.get("mac"))
     except PermissionError as e:
         if from_keychain:
             keychain_delete()
@@ -262,7 +315,15 @@ def main():
             time.sleep(2)
             try:
                 router = Router(args.host)
-                router.login(pw, user)
+                key, _ = router.public_key()
+                pin = load_pin()
+                mac = router_mac(args.host)
+                if pin.get("key") == key or (mac is not None and pin.get("mac") == mac):
+                    router.login(pw, user, expected_key=key)
+                    save_pin(key, mac or pin.get("mac"))
+                else:
+                    sys.stdout.write(f"{RED}Router identity changed (different network?). Not sending your password.{RESET}\n")
+                    time.sleep(10)
             except Exception:
                 pass
             continue
@@ -290,7 +351,7 @@ def main():
             name = e.get("hostName") or h.get("hostName") or ""
             if name in ("", "--", "*"):
                 name = mac or "unknown device"
-            rows.append({"name": name, "ip": ip, "rate": max(rate, 0),
+            rows.append({"name": clean(name), "ip": clean(ip), "rate": max(rate, 0),
                          "session": max(total - first[key], 0), "total": total})
         rows.sort(key=lambda r: (r["rate"], r["session"]), reverse=True)
         render(rows, args.interval, args.host, started)

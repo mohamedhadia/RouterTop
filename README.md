@@ -98,6 +98,7 @@ RouterTop turns on the router's **Traffic Statistics** feature automatically if 
 - Your password is stored in the **macOS Keychain**, never in plain text.
 - RouterTop talks **only to your router**, on your local network. No internet access, no analytics, no data collection.
 - The login is encrypted the same way the router's own web page does it (RSA, using the key the router provides).
+- **Your password only goes to your router.** On the first successful login, RouterTop remembers your router's RSA public key and MAC address. On any other network (a café, a hotel, a friend's house), whatever answers at `192.168.1.1` won't match, so RouterTop pauses and doesn't send your password. If you replace your router, re-save **Router Settings**.
 - The full source is in [`Sources/`](Sources/), about 650 lines.
 
 ## Command-line version

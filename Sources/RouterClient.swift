@@ -80,12 +80,21 @@ final class RouterClient {
         return Self.match(#"isLogined=(\d+)"#, in: s) == "1"
     }
 
-    func login(user: String, password: String) async throws {
+    /// The router's RSA public key (modulus hex), used to encrypt the login.
+    func publicKey() async throws -> (n: String, e: String) {
         let parm = try await request("/cgi/getParm")
         guard let e = Self.match(#"ee="([0-9a-fA-F]+)""#, in: parm),
               let n = Self.match(#"nn="([0-9a-fA-F]+)""#, in: parm) else {
             throw RouterError.router("unsupported router (no login key)")
         }
+        return (n.lowercased(), e)
+    }
+
+    /// Logs in. `expectedKey`, when given, must match the router's current key, so the
+    /// password is only ever encrypted for the router the caller already verified.
+    func login(user: String, password: String, expectedKey: String? = nil) async throws {
+        let (n, e) = try await publicKey()
+        if let expectedKey, expectedKey != n { throw RouterError.router("router key changed during login") }
         let name = try Self.rsaEncrypt(user, modulusHex: n, exponentHex: e)
         let auth = try Self.rsaEncrypt(Data(password.utf8).base64EncodedString(), modulusHex: n, exponentHex: e)
         try await request("/cgi/login?UserName=\(name)&Passwd=\(auth)&Action=1&LoginStatus=0")
